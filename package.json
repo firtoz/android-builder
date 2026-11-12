@@ -1,0 +1,57 @@
+{
+  "name": "@firtoz/android-builder",
+  "version": "0.1.0-dev.0",
+  "description": "Recoverable Android builds on disposable compute, powered by Jetski",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.22.1"
+  },
+  "bin": {
+    "android-builder": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./providers/boat": {
+      "types": "./dist/providers/boat.d.ts",
+      "import": "./dist/providers/boat.js"
+    }
+  },
+  "files": [
+    "dist",
+    "host",
+    "README.md",
+    "LICENSE",
+    "docs",
+    "examples",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "lint": "biome check --error-on-warnings src tests examples",
+    "check": "npm run build && npm run typecheck && npm run test && npm run lint",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@firtoz/jetski": "0.2.1",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3",
+    "typescript": "6.0.3",
+    "@biomejs/biome": "2.5.14"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/firtoz/android-builder.git"
+  },
+  "homepage": "https://github.com/firtoz/android-builder#readme",
+  "bugs": {
+    "url": "https://github.com/firtoz/android-builder/issues"
+  }
+}

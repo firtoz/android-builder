@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Small example bootstrap. Downloads execute on the dedicated build VM only.
+set -euo pipefail
+base="${GRADLE_USER_HOME:-$HOME/.gradle}/bootstrap"
+mkdir -p "$base"
+if [[ ! -x "$base/gradle-8.13/bin/gradle" ]]; then
+  archive="$base/gradle-8.13-bin.zip"
+  curl -fsSL --max-time 240 https://services.gradle.org/distributions/gradle-8.13-bin.zip -o "$archive"
+  printf '%s  %s\n' '20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78' "$archive" | sha256sum -c -
+  unzip -q "$archive" -d "$base"
+fi
+exec "$base/gradle-8.13/bin/gradle" "$@"

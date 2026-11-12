@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.local/
+.android-builds/
+.env*
+*.apk
+*.aab
+*.jks
+*.keystore
+*.pem
+*.key
+*.tgz
+__pycache__/

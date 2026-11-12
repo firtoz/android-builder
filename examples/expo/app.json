@@ -1,0 +1,8 @@
+{
+	"expo": {
+		"name": "Builder Hello",
+		"slug": "builder-hello",
+		"version": "1.0.0",
+		"android": { "package": "org.example.builderhello" }
+	}
+}
