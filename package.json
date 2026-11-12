@@ -1,6 +1,6 @@
 {
   "name": "@firtoz/android-builder",
-  "version": "0.1.0-dev.0",
+  "version": "0.1.0",
   "description": "Recoverable Android builds on disposable compute, powered by Jetski",
   "type": "module",
   "license": "MIT",
@@ -53,5 +53,8 @@
   "homepage": "https://github.com/firtoz/android-builder#readme",
   "bugs": {
     "url": "https://github.com/firtoz/android-builder/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

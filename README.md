@@ -2,13 +2,13 @@
 
 Recoverable Android APK builds on disposable Linux compute. Use the same typed configuration from your laptop or CI; keep provider credentials on the controller and sign artifacts separately.
 
-**Local development candidate:** this package is not published or live-qualified yet. The local tests use simulated hosts and exercise the actual one-shot host launcher without compiling Android. A prior client-specific builder is not qualification of this extracted package.
+The standalone Expo and native Gradle examples have each compiled on fresh Boat Large hosts, with hash-verified APK downloads and confirmed host retirement. [Measured results and limits](docs/qualification.md). Core recovery tests use simulated hosts and the real one-shot launcher; consumer integrations and broader release profiles remain separate qualification.
 
 ## Use it
 
 Use Node 24.22.1 or newer on Linux. Your source must be in Git, and you must supply SDK license hashes you have already accepted. Nothing accepts SDK terms automatically. The initial host bootstrap expects an x86-64 Debian/Ubuntu machine with passwordless `sudo` and outbound HTTPS; Boat Large is the initial adapter configuration.
 
-After publication, install `@firtoz/android-builder` as a development dependency. Until then, use `npm run build && npm pack` in this checkout and install that local tarball in your project.
+Install with `npm install --save-dev @firtoz/android-builder`. For development before a release reaches the registry, run `npm run build && npm pack` in this checkout and install the local tarball.
 
 ```ts
 // android-builder.config.ts

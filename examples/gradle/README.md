@@ -1,6 +1,6 @@
 # Gradle hello
 
-A native Java/Gradle application with no JavaScript runtime dependency. No account identifiers, Firebase or model services are required. This is a candidate pending a real hosted Android build.
+A native Java/Gradle application with no JavaScript runtime dependency. No account identifiers, Firebase or model services are required. The standalone example has passed a real hosted Android build; see the repository qualification notes.
 
 1. Copy this whole folder into a new Git repository and commit its source. Use Node24.22.1+.
 2. Install the local packed Android Builder tarball with `npm install --save-dev /path/to/package.tgz` (after publication, `npm install --save-dev @firtoz/android-builder`). Commit the updated manifest and lockfile.
