@@ -35,6 +35,8 @@ npx android-builder inspect --directory ./build-receipt
 
 Review the report and resolved plan. Root `package.json#packageManager` supplies npm, `app.json` supplies the expected application ID, and the debug APK path is derived. NDK/CMake remain explicit because generated native requirements cannot be safely inferred from app.json. Keep this source free of an `android/` tree; an existing native project uses the Gradle profile instead.
 
+For a side-by-side EAS comparison, async start/reconnect and optional development-client/Orbit handoff, see [Expo workflow](../../docs/expo.md). This minimal example remains a plain debug app; it does not include expo-dev-client.
+
 ## Start and retrieve
 
 Provide `BOAT_API_KEY` privately to the controller, then explicitly admit the build:

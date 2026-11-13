@@ -47,8 +47,8 @@ All Android outputs were debug APKs. Expo required its normal Metro/development 
 
 ## 0.2.0-dev.0: offline candidate checks — November 13, 2026
 
-The candidate changes source diagnostics, high-level APIs, CLI behavior and host ABI arguments. Earlier live results do not qualify those changes or the updated example sources. No new paid host or real Android compilation is part of this candidate evidence.
+The candidate changes source diagnostics, high-level APIs, asynchronous launch/recent-history commands, CLI behavior and host ABI arguments. Earlier live results do not qualify those changes or the updated example sources. No new paid host or real Android compilation is part of this candidate evidence.
 
-On Node 24.22.1, `npm run check` passed build/types, 26 recovery/preparation/CLI tests and lint. Fresh packed installs checked SDK/provider/CLI exports, SQLite open/close, strict public API types, native/Expo configuration, Expo TSX, both frozen preparations and offline JSON. App/controller types used separate appropriate globals with `strict: true` and `skipLibCheck: false`.
+On Node 24.22.1, `npm run check` passes build/types, recovery/preparation/CLI tests, lint and local documentation links. Async tests cover acknowledged start without polling/retirement, same-identity retrieval, uncertain launch refusal and preserved compiler failure; history tests cover offline ordering, limits and unreadable receipt reporting. Fresh packed installs checked SDK/provider/CLI exports, SQLite open/close, strict public API types, native/Expo configuration, Expo TSX, both frozen preparations and offline JSON. App/controller types used separate appropriate globals with `strict: true` and `skipLibCheck: false`.
 
 The package fixture deliberately keeps its local controller tarball inside frozen source: an external `file:` target is a real missing-input error, including in dev dependencies. Test install scripts are disabled; simulated APKs establish no Android compilation result. Current documentation/link/package checks are described in [development](development.md); their results must not be reported as live qualification.

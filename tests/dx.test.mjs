@@ -3,8 +3,10 @@ import { randomUUID } from "node:crypto";
 import {
 	mkdir,
 	mkdtemp,
+	readdir,
 	readFile,
 	rm,
+	stat,
 	symlink,
 	writeFile,
 } from "node:fs/promises";
@@ -12,11 +14,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { buildJournal, sha256 } from "../dist/contracts.js";
-import { exec, saveJournal } from "../dist/files.js";
+import { exec, saveJournal, withBuildLock } from "../dist/files.js";
 import {
 	BuildError,
 	createBuilder,
 	defineProjectConfig,
+	listBuilds,
 	prepareBuild,
 } from "../dist/index.js";
 
@@ -283,7 +286,15 @@ async function handleFixture(run) {
 		join(directory, "provider.json"),
 		JSON.stringify({ version: 1, id: "fixture:large" }),
 	);
-	const stats = { opened: 0, closed: 0, allocated: 0, launched: 0, retired: 0 };
+	const stats = {
+		opened: 0,
+		closed: 0,
+		allocated: 0,
+		launched: 0,
+		retired: 0,
+		observed: 0,
+		downloaded: 0,
+	};
 	const flags = {
 		lostAck: false,
 		corrupt: false,
@@ -313,7 +324,8 @@ async function handleFixture(run) {
 							stats.launched++;
 							if (flags.lostAck) throw Error("lost ack");
 						}
-						if (cmd.includes(" observe "))
+						if (cmd.includes(" observe ")) {
+							stats.observed++;
 							return JSON.stringify({
 								cursor: 0,
 								log: "",
@@ -326,10 +338,13 @@ async function handleFixture(run) {
 										: { bytes: apk.length, sha256: sha256(apk) },
 								},
 							});
+						}
 						return "";
 					},
-					download: async (_h, _p, _b, target) =>
-						writeFile(target, flags.corrupt ? "corrupt" : apk),
+					download: async (_h, _p, _b, target) => {
+						stats.downloaded++;
+						await writeFile(target, flags.corrupt ? "corrupt" : apk);
+					},
 					retire: async () => {
 						stats.retired++;
 						if (flags.cleanup) throw Error("lost retirement ack");
@@ -581,6 +596,39 @@ export const provider={id:'fixture:cli',open:async()=>({close:()=>{},transport:{
 				);
 				if (mode === "RETIRE") assert.ok(result.build.artifact);
 			}
+			try {
+				await exec(
+					process.execPath,
+					[
+						cli,
+						"wait",
+						"--directory",
+						directory,
+						"--provider-module",
+						modulePath,
+						"--json",
+					],
+					{ env: { ...process.env, [`FIXTURE_${mode}_FAIL`]: "1" } },
+				);
+				assert.fail("non-successful completion must fail CI");
+			} catch (e) {
+				assert.equal(e.code, 1);
+				const completion = JSON.parse(e.stdout);
+				assert.equal(completion.ok, false);
+				assert.equal(
+					completion.result.outcome,
+					mode === "BUILD" ? "failed" : "needs-attention",
+				);
+				assert.ok(
+					completion.result.issues.some(
+						(i) =>
+							i.code ===
+							(mode === "BUILD" ? "BUILD_FAILED" : "RETIREMENT_UNCONFIRMED"),
+					),
+				);
+				assert.equal(completion.result.journal, undefined);
+				assert.equal(completion.build, undefined);
+			}
 		}
 	}));
 
@@ -646,4 +694,386 @@ test("generated receipt identity reconnects by ID without opening a provider", (
 		assert.equal(same.directory, build.directory);
 		assert.equal((await same.inspect()).work, "not-started");
 		assert.equal(opened, 0);
+	}));
+
+test("async start acknowledges launch without observation or cleanup, then reconnect retrieves once", () =>
+	handleFixture(async ({ directory, builder, stats }) => {
+		const build = await builder.reconnect({ directory });
+		const started = await build.start({
+			admitUsd: 0.2,
+			waitForCompletion: false,
+		});
+		assert.equal(started.work, "running");
+		assert.equal(started.cleanup, "unresolved");
+		assert.equal(started.artifact, undefined);
+		assert.equal(stats.observed, 0);
+		assert.equal(stats.downloaded, 0);
+		assert.equal(stats.retired, 0);
+		assert.equal(stats.opened, stats.closed);
+		await assert.rejects(
+			readFile(join(directory, "controller.lock/owner.json")),
+			{ code: "ENOENT" },
+		);
+		await build.start({ admitUsd: 0.2, waitForCompletion: false });
+		assert.equal(stats.allocated, 1);
+		assert.equal(stats.launched, 1);
+		assert.equal(stats.observed, 0);
+		const same = await builder.reconnect({ directory }),
+			result = await same.observe();
+		assert.equal(result.id, started.id);
+		assert.equal(result.journal.expiresAt, started.journal.expiresAt);
+		assert.equal(result.journal.artifactVerified, true);
+		assert.equal(result.cleanup, "retired");
+		assert.equal(stats.downloaded, 1);
+		assert.equal(stats.retired, 1);
+		assert.equal(stats.allocated, 1);
+		assert.equal(stats.launched, 1);
+		assert.equal(stats.opened, stats.closed);
+	}));
+
+test("async start never replays an uncertain launch or hides a subsequent compiler failure", () =>
+	handleFixture(async ({ directory, builder, stats, flags }) => {
+		const build = await builder.reconnect({ directory });
+		flags.lostAck = true;
+		await assert.rejects(
+			build.start({ admitUsd: 0.2, waitForCompletion: false }),
+			(e) => e.code === "LAUNCH_UNCERTAIN",
+		);
+		await assert.rejects(
+			build.start({ admitUsd: 0.2, waitForCompletion: false }),
+			(e) => e.code === "LAUNCH_UNCERTAIN",
+		);
+		assert.equal(stats.launched, 1);
+		assert.equal(stats.allocated, 1);
+		assert.equal(stats.observed, 0);
+		flags.fail = true;
+		await assert.rejects(
+			build.observe(),
+			(e) =>
+				e.code === "BUILD_FAILED" &&
+				e.build.work === "failed" &&
+				e.build.cleanup === "retired",
+		);
+		await assert.rejects(
+			build.start({ admitUsd: 0.2, waitForCompletion: false }),
+			(e) => e.code === "BUILD_FAILED",
+		);
+		assert.equal(stats.launched, 1);
+		assert.equal(stats.allocated, 1);
+		assert.equal(stats.opened, stats.closed);
+	}));
+
+test("offline history orders and bounds direct receipts, reports unreadable entries, and preserves state", () =>
+	handleFixture(async ({ directory, journal }) => {
+		for (const [name, preparedAt, state, retired, artifactVerified] of [
+			["older", 100, "failed", true, false],
+			["newer", 200, "complete", false, true],
+		]) {
+			const child = join(directory, name);
+			await mkdir(child);
+			await saveJournal(child, {
+				...journal,
+				id: randomUUID(),
+				preparedAt,
+				state,
+				retired,
+				artifactVerified,
+			});
+		}
+		await mkdir(join(directory, "broken"));
+		await writeFile(join(directory, "broken/build.json"), "{");
+		const before = await readFile(join(directory, "newer/build.json"), "utf8");
+		const builder = createBuilder({
+			receiptsDirectory: directory,
+			provider: {
+				id: "fixture:never-open",
+				open: async () => {
+					throw Error("history must stay offline");
+				},
+			},
+		});
+		const history = await builder.list({ limit: 1 });
+		assert.equal(history.builds.length, 1);
+		assert.equal(history.total, 2);
+		assert.equal(history.builds[0].preparedAt, 200);
+		assert.equal(history.builds[0].work, "complete");
+		assert.equal(history.builds[0].cleanup, "unresolved");
+		assert.equal(history.builds[0].artifactVerified, true);
+		assert.equal(history.issues.length, 1);
+		assert.equal(history.issues[0].code, "RECEIPT_UNAVAILABLE");
+		assert.equal(
+			await readFile(join(directory, "newer/build.json"), "utf8"),
+			before,
+		);
+		assert.equal((await listBuilds(directory)).builds[1].work, "failed");
+		await assert.rejects(
+			builder.list({ limit: 101 }),
+			(e) => e.code === "INVALID_INPUT",
+		);
+		assert.equal((await listBuilds(join(directory, "missing"))).total, 0);
+	}));
+
+test("CLI async start and local build history reconnect to the same verified artifact", () =>
+	sourceFixture(async ({ root, config, licensesDirectory, base }) => {
+		const modulePath = join(base, "async-provider.mjs"),
+			configPath = join(base, "config.json"),
+			receipts = join(base, "receipts");
+		await writeFile(configPath, JSON.stringify(config));
+		await writeFile(
+			modulePath,
+			`import {appendFile,writeFile} from 'node:fs/promises'; import {join} from 'node:path'; import {createHash} from 'node:crypto';
+const apk=Buffer.from('simulated artifact, not an Android compile');
+export const provider={id:'fixture:async',open:async(directory)=>({close:()=>{},transport:{allocate:async()=> 'owned_fixture',ready:async()=>{},upload:async()=>{},command:async(_h,text)=>{await appendFile(join(directory,'calls.log'),text+'\\n'); return text.includes(' observe ')?JSON.stringify({cursor:0,log:'',claimed:true,status:{state:'complete',phase:'compile',artifact:{bytes:apk.length,sha256:createHash('sha256').update(apk).digest('hex')}}}):''},download:async(_h,_p,_n,target)=>writeFile(target,apk),retire:async()=>{}}})};`,
+		);
+		const invoke = async (args) =>
+			JSON.parse(
+				(await exec(process.execPath, [cli, ...args, "--json"])).stdout,
+			);
+		const prepared = await invoke([
+			"prepare",
+			"--root",
+			root,
+			"--config",
+			configPath,
+			"--licenses",
+			licensesDirectory,
+			"--receipts-directory",
+			receipts,
+			"--provider-module",
+			modulePath,
+		]);
+		const directory = prepared.build.directory;
+		const started = await invoke([
+			"start",
+			"--directory",
+			directory,
+			"--admit-usd",
+			"0.20",
+			"--no-wait",
+			"--provider-module",
+			modulePath,
+		]);
+		assert.equal(started.ok, true);
+		assert.equal(started.build.work, "running");
+		assert.equal(started.build.journal.artifactVerified, false);
+		const history = await invoke([
+			"list",
+			"--receipts-directory",
+			receipts,
+			"--limit",
+			"1",
+		]);
+		assert.equal(history.history.builds[0].id, prepared.build.id);
+		assert.equal(history.history.builds[0].work, "running");
+		const result = await invoke([
+			"observe",
+			"--directory",
+			directory,
+			"--provider-module",
+			modulePath,
+		]);
+		assert.equal(result.build.id, prepared.build.id);
+		assert.equal(result.build.cleanup, "retired");
+		assert.equal(result.build.journal.artifactVerified, true);
+		const waited = await invoke(["wait", "--directory", directory]);
+		assert.equal(waited.result.outcome, "succeeded");
+		assert.equal(waited.result.artifact.buildId, prepared.build.id);
+		assert.equal(waited.result.journal, undefined);
+		assert.equal(waited.result.preparation, undefined);
+		const output = join(base, "approved", `${prepared.build.id}.apk`);
+		const exported = await invoke([
+			"export",
+			"--directory",
+			directory,
+			"--output",
+			output,
+		]);
+		assert.equal(exported.artifact.sha256, waited.result.artifact.sha256);
+		assert.equal(exported.artifact.path, output);
+		await invoke(["export", "--directory", directory, "--output", output]);
+		await writeFile(output, "different existing file");
+		try {
+			await invoke(["export", "--directory", directory, "--output", output]);
+			assert.fail("must refuse conflicting output");
+		} catch (e) {
+			const failure = JSON.parse(e.stdout);
+			assert.equal(failure.error.code, "ARTIFACT_EXPORT_CONFLICT");
+			assert.equal(failure.recovery.buildId, prepared.build.id);
+			assert.equal(failure.build, undefined);
+		}
+		const calls = await readFile(join(directory, "calls.log"), "utf8");
+		assert.equal(
+			calls.split("\n").filter((v) => v.endsWith(" launch")).length,
+			1,
+		);
+		try {
+			await invoke(["observe", "--directory", directory, "--no-wait"]);
+			assert.fail("flag must be start-only");
+		} catch (e) {
+			assert.equal(e.code, 2);
+			assert.equal(JSON.parse(e.stdout).error.code, "INVALID_INPUT");
+		}
+	}));
+
+test("wait returns compact completion, preserves failed work and unresolved cleanup, and never starts prepared work", () =>
+	handleFixture(async ({ directory, builder, flags, stats }) => {
+		const build = await builder.reconnect({ directory });
+		const prepared = await build.wait();
+		assert.equal(prepared.outcome, "needs-attention");
+		assert.equal(prepared.issues[0].code, "INVALID_STATE");
+		assert.equal(stats.allocated, 0);
+		await build.start({ admitUsd: 0.2, waitForCompletion: false });
+		flags.fail = true;
+		flags.cleanup = true;
+		const failed = await build.wait();
+		assert.equal(failed.outcome, "failed");
+		assert.equal(failed.work, "failed");
+		assert.equal(failed.cleanup, "unresolved");
+		assert.equal(failed.artifact, undefined);
+		assert.ok(failed.issues.some((i) => i.code === "BUILD_FAILED"));
+		assert.ok(failed.issues.some((i) => i.code === "RETIREMENT_UNCONFIRMED"));
+		assert.equal(failed.journal, undefined);
+		assert.equal(failed.preparation, undefined);
+		assert.equal(failed.applicationId, "org.example.hello");
+		flags.cleanup = false;
+		await build.retire();
+		const opened = stats.opened,
+			offline = await createBuilder().reconnect({ directory });
+		assert.equal((await offline.wait()).outcome, "failed");
+		assert.equal(stats.opened, opened);
+		assert.equal(stats.launched, 1);
+	}));
+
+test("wait exposes a valid artifact independently from unconfirmed retirement and resolves cleanup without another compile", () =>
+	handleFixture(async ({ directory, builder, flags, stats }) => {
+		const build = await builder.reconnect({ directory });
+		await build.start({ admitUsd: 0.2, waitForCompletion: false });
+		flags.cleanup = true;
+		const pending = await build.wait();
+		assert.equal(pending.outcome, "needs-attention");
+		assert.equal(pending.work, "complete");
+		assert.equal(pending.cleanup, "unresolved");
+		assert.ok(pending.artifact?.sha256);
+		assert.deepEqual(pending.timings, []);
+		assert.equal(pending.artifact.buildId, build.id);
+		assert.equal(
+			pending.artifact.bytes,
+			(await readFile(pending.artifact.path)).length,
+		);
+		flags.cleanup = false;
+		const complete = await build.wait();
+		assert.equal(complete.outcome, "succeeded");
+		assert.equal(complete.cleanup, "retired");
+		assert.deepEqual(complete.issues, []);
+		const opened = stats.opened;
+		const offline = await createBuilder().reconnect({ directory });
+		assert.equal((await offline.wait()).outcome, "succeeded");
+		assert.equal(stats.opened, opened);
+		assert.equal(stats.launched, 1);
+	}));
+
+test("wait does not publish corrupt transfer metadata and retries only the original artifact", () =>
+	handleFixture(async ({ directory, builder, flags, stats }) => {
+		const build = await builder.reconnect({ directory });
+		await build.start({ admitUsd: 0.2, waitForCompletion: false });
+		flags.corrupt = true;
+		const bad = await build.wait();
+		assert.equal(bad.outcome, "needs-attention");
+		assert.equal(bad.artifact, undefined);
+		assert.ok(
+			bad.issues.some((i) => i.code === "ARTIFACT_VERIFICATION_FAILED"),
+		);
+		assert.equal(stats.retired, 0);
+		flags.corrupt = false;
+		assert.equal((await build.wait()).outcome, "succeeded");
+		assert.equal(stats.downloaded, 2);
+		assert.equal(stats.launched, 1);
+		assert.equal(stats.allocated, 1);
+	}));
+
+test("verified export is local, idempotent, private and non-overwriting even with cleanup unresolved", () =>
+	handleFixture(async ({ directory, builder, flags, stats }) => {
+		const outputDirectory = await mkdtemp(join(tmpdir(), "builder-export-"));
+		try {
+			const build = await builder.reconnect({ directory });
+			await build.start({ admitUsd: 0.2, waitForCompletion: false });
+			flags.cleanup = true;
+			const result = await build.wait();
+			const opened = stats.opened;
+			const offline = await createBuilder().reconnect({ directory }),
+				target = join(outputDirectory, "approved", `${build.id}.apk`);
+			const exported = await offline.exportArtifact(target);
+			assert.equal(exported.sha256, result.artifact.sha256);
+			assert.equal(exported.sourceHash, result.source.hash);
+			assert.equal(exported.buildId, build.id);
+			assert.equal(exported.applicationId, result.applicationId);
+			assert.equal(exported.path, target);
+			const info = await stat(target);
+			assert.equal(info.mode & 0o777, 0o600);
+			assert.deepEqual(await offline.exportArtifact(target), exported);
+			assert.equal((await stat(target)).ino, info.ino);
+			assert.equal(stats.opened, opened);
+			const journal = await readFile(join(directory, "build.json"));
+			await assert.rejects(
+				offline.exportArtifact(join(directory, "build.json")),
+				(e) => e.code === "INVALID_INPUT",
+			);
+			assert.deepEqual(await readFile(join(directory, "build.json")), journal);
+			await writeFile(target, "do not overwrite");
+			await assert.rejects(
+				offline.exportArtifact(target),
+				(e) => e.code === "ARTIFACT_EXPORT_CONFLICT",
+			);
+			assert.equal(await readFile(target, "utf8"), "do not overwrite");
+			await withBuildLock(directory, async () => {
+				await assert.rejects(
+					offline.exportArtifact(target),
+					(e) => e.code === "LOCKED",
+				);
+			});
+			assert.equal(stats.launched, 1);
+			assert.equal(stats.opened, opened);
+		} finally {
+			await rm(outputDirectory, { recursive: true, force: true });
+		}
+	}));
+
+test("export rejects changed source and symlinks without publishing partial output", () =>
+	handleFixture(async ({ directory, builder }) => {
+		const output = await mkdtemp(join(tmpdir(), "builder-export-integrity-"));
+		try {
+			const build = await builder.reconnect({ directory });
+			await build.start({ admitUsd: 0.2 });
+			const source = join(directory, "artifact.apk"),
+				original = await readFile(source),
+				target = join(output, "artifact.apk");
+			await writeFile(source, Buffer.alloc(original.length, 0));
+			await assert.rejects(
+				build.exportArtifact(target),
+				(e) => e.code === "ARTIFACT_VERIFICATION_FAILED",
+			);
+			assert.deepEqual(await readdir(output), []);
+			await writeFile(source, original);
+			await writeFile(join(output, "original.apk"), original);
+			await symlink(join(output, "original.apk"), target);
+			await assert.rejects(
+				build.exportArtifact(target),
+				(e) => e.code === "ARTIFACT_EXPORT_CONFLICT",
+			);
+			assert.deepEqual(await readFile(join(output, "original.apk")), original);
+			await rm(target);
+			await rm(source);
+			await symlink(join(output, "original.apk"), source);
+			await assert.rejects(
+				build.exportArtifact(target),
+				(e) => e.code === "ARTIFACT_VERIFICATION_FAILED",
+			);
+			await assert.rejects(
+				build.artifact(),
+				(e) => e.code === "ARTIFACT_VERIFICATION_FAILED",
+			);
+			await assert.rejects(readFile(target), { code: "ENOENT" });
+		} finally {
+			await rm(output, { recursive: true, force: true });
+		}
 	}));

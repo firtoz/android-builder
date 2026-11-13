@@ -1,13 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { access, mkdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import {
+	exportVerifiedArtifact,
+	type VerifiedArtifact,
+	verifiedArtifact,
+} from "./artifacts.js";
 import type { BuilderTransport, BuildJournal } from "./contracts.js";
-import { quote, sha256, spendingLimit } from "./contracts.js";
+import { quote, spendingLimit } from "./contracts.js";
 import { type RunOptions, retireBuild, runBuild } from "./controller.js";
 import type { PreparationReport } from "./diagnostics.js";
 import { BuildError } from "./errors.js";
 import { atomicJson, readJournal } from "./files.js";
+import { listBuilds, receiptOutcomes } from "./history.js";
 import { type PrepareOptions, prepareBuild } from "./prepare.js";
+import { type BuildCompletion, buildCompletion } from "./results.js";
 
 /** Controller-side factory. id must identify immutable provider/machine settings. */
 export interface BuildProvider {
@@ -69,15 +76,22 @@ export interface ObserveOptions {
 	log?: RunOptions["log"];
 	progress?: RunOptions["progress"];
 }
+export interface StartOptions extends ObserveOptions {
+	admitUsd: number;
+	/** false returns after launch acknowledgement; observe later for APK/cleanup. */
+	waitForCompletion?: boolean;
+}
 export interface BuildHandle {
 	readonly id: string;
 	readonly directory: string;
 	inspect(): Promise<BuildInspection>;
-	start(
-		options: ObserveOptions & { admitUsd: number },
-	): Promise<BuildInspection>;
+	start(options: StartOptions): Promise<BuildInspection>;
 	/** Never allocates or launches; retrieves artifacts and retries owned cleanup. */
 	observe(options?: ObserveOptions): Promise<BuildInspection>;
+	/** Observe without launch; return known build/cleanup outcomes as data. */
+	wait(options?: ObserveOptions): Promise<BuildCompletion>;
+	/** Local, verified, atomic export; never overwrites different content. */
+	exportArtifact(destination: string): Promise<VerifiedArtifact>;
 	retire(): Promise<BuildInspection>;
 	artifact(): Promise<string>;
 }
@@ -134,19 +148,7 @@ export function createBuilder(
 				journal: j,
 				preparation,
 				provider: await providerIdentity(),
-				work:
-					j.state === "prepared"
-						? "not-started"
-						: j.state === "complete" || j.state === "failed"
-							? j.state
-							: j.state === "running"
-								? "running"
-								: "unresolved",
-				cleanup: j.retired
-					? "retired"
-					: j.state === "prepared"
-						? "not-allocated"
-						: "unresolved",
+				...receiptOutcomes(j),
 				artifact: j.artifactVerified
 					? join(directory, "artifact.apk")
 					: undefined,
@@ -183,12 +185,35 @@ export function createBuilder(
 				throw new BuildOperationError(error, snapshot);
 			}
 		};
+		const observe = async (opts: ObserveOptions = {}) => {
+			const j = await readJournal(directory);
+			if (["prepared", "allocating", "allocated", "uploaded"].includes(j.state))
+				throw new BuildOperationError(
+					new BuildError(
+						"INVALID_STATE",
+						"Build needs explicit start/admission to continue before launch; use start with the same receipt",
+					),
+					await inspect(),
+				);
+			return operate((transport) =>
+				runBuild(directory, transport, {
+					...opts,
+					maxUsd: j.config.reservationUsd,
+					observeOnly: true,
+				}),
+			);
+		};
 		return {
 			id,
 			directory,
 			inspect,
-			start: async ({ admitUsd, ...opts }) => {
+			start: async ({ admitUsd, waitForCompletion = true, ...opts }) => {
 				try {
+					if (typeof waitForCompletion !== "boolean")
+						throw new BuildError(
+							"INVALID_INPUT",
+							"waitForCompletion must be a boolean",
+						);
 					spendingLimit(
 						admitUsd,
 						(await readJournal(directory)).config.reservationUsd,
@@ -203,28 +228,38 @@ export function createBuilder(
 					);
 				}
 				return operate((transport) =>
-					runBuild(directory, transport, { ...opts, maxUsd: admitUsd }),
-				);
-			},
-			observe: async (opts = {}) => {
-				const j = await readJournal(directory);
-				if (
-					["prepared", "allocating", "allocated", "uploaded"].includes(j.state)
-				)
-					throw new BuildOperationError(
-						new BuildError(
-							"INVALID_STATE",
-							"Build needs explicit start/admission to continue before launch; use start with the same receipt",
-						),
-						await inspect(),
-					);
-				return operate((transport) =>
 					runBuild(directory, transport, {
 						...opts,
-						maxUsd: j.config.reservationUsd,
-						observeOnly: true,
+						maxUsd: admitUsd,
+						untilLaunched: !waitForCompletion,
 					}),
 				);
+			},
+			observe,
+			wait: async (opts = {}) => {
+				const current = await inspect();
+				if (current.journal.retired) return buildCompletion(current);
+				try {
+					return await buildCompletion(await observe(opts));
+				} catch (cause) {
+					if (!(cause instanceof BuildOperationError)) throw cause;
+					return buildCompletion(cause.build, cause);
+				}
+			},
+			exportArtifact: async (destination) => {
+				try {
+					return await exportVerifiedArtifact(directory, destination);
+				} catch (cause) {
+					const issue =
+						cause instanceof BuildError
+							? cause
+							: new BuildError(
+									"ARTIFACT_EXPORT_FAILED",
+									"Local artifact export was not confirmed; retain its receipt",
+									{ cause },
+								);
+					throw new BuildOperationError(issue, await inspect());
+				}
 			},
 			retire: async () => {
 				const j = await readJournal(directory);
@@ -240,28 +275,17 @@ export function createBuilder(
 				return operate((transport) => retireBuild(directory, transport));
 			},
 			artifact: async () => {
-				const j = await readJournal(directory);
-				const bytes = await readFile(join(directory, "artifact.apk")).catch(
-					() => undefined,
-				);
-				if (
-					!j.artifactVerified ||
-					!bytes ||
-					bytes.length !== j.outcome?.artifact?.bytes ||
-					sha256(bytes) !== j.outcome.artifact.sha256
-				)
-					throw new BuildOperationError(
-						new BuildError(
-							"ARTIFACT_VERIFICATION_FAILED",
-							"No verified local artifact; retain the receipt and source host",
-						),
-						await inspect(),
-					);
-				return join(directory, "artifact.apk");
+				try {
+					return (await verifiedArtifact(directory)).path;
+				} catch (cause) {
+					if (!(cause instanceof BuildError)) throw cause;
+					throw new BuildOperationError(cause, await inspect());
+				}
 			},
 		};
 	}
 	return {
+		list: (options: { limit?: number } = {}) => listBuilds(base, options),
 		async prepare(
 			input: Omit<PrepareOptions, "directory"> & { directory?: string },
 		): Promise<BuildHandle> {

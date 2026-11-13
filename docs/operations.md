@@ -8,9 +8,14 @@ Receipts are generated private durable state. Keep the complete directory, inclu
 | --- | --- |
 | `prepare` | Freezes/checks inputs and writes a plan; no adapter open, credentials or allocation. |
 | `inspect` (`status` alias) | Reads local evidence only. Does not claim that a host is still alive or a remote phase current. Can inspect a failed-preparation report without a build journal. |
+| `list [--receipts-directory PATH] [--limit 20]` | Reads recent direct child receipt journals; offline only, with separate work/cleanup and unreadable-receipt issues. |
 | `start --admit-usd N` (`run --max-usd N` aliases) | Explicitly admits/continues this identity. May reconcile an uncertain allocation with the provider's original fenced operation, upload, launch once, observe, retrieve and finish owned cleanup. |
 | `observe` | Authenticated observation/retrieval/cleanup for an already launched build. Never allocates or launches. A pre-launch receipt requires explicit `start` of that same receipt. |
+| `wait` | Same no-launch observation path, with compact domain completion data; exits 0 only for fully verified/retired success. |
+| `export --output PATH` | Local verified atomic APK export; no provider calls, accepts identical retries, refuses different existing content. |
 | `retire` | Deliberately retires only a positively owned host. Can destroy an unretrieved artifact. An uncertain allocation without host ID refuses retirement; reconcile its original identity with `start` within the provider's safe reconciliation window, or investigate provider evidence. |
+
+`start --no-wait` returns after an acknowledged remote launch and releases its local lock/adapter. A zero exit means the launch stage was acknowledged, **not** that compilation succeeded or the APK was retrieved. It creates no local background watcher. Keep a durable observer running in CI, or reconnect with `observe` before the original lease expires, to download/verify the APK and finish cleanup. A lost acknowledgement stays `LAUNCH_UNCERTAIN`; repeating no-wait start will not replay it. If no observer returns, remote files may disappear at lease expiry. [Async workflow](expo.md).
 
 Ctrl-C/SIGTERM in the CLI cancels observation and removes its signal handlers. Remote compilation may continue. Readiness, commands and individual transfers have bounded operations; cancellation is checked between phases/observations, not guaranteed to interrupt a provider request already in flight. Use `inspect` then the indicated same-receipt command. SDK callers can supply an `AbortSignal`; the SDK does not install global process handlers.
 
@@ -43,9 +48,12 @@ Normal output is human readable; progress and compiler logs go to stderr. `--jso
 | `REMOTE_UNAVAILABLE` / `REMOTE_GONE` | Remote call unconfirmed / positively observed absence. Preserve evidence; no automatic replacement. |
 | `BUILD_FAILED` | Original setup/compiler failure; retained log/outcome, even if retired. |
 | `ARTIFACT_VERIFICATION_FAILED` | Artifact omitted, changed, absent or transfer unverified; retain available source and inspect. |
+| `ARTIFACT_EXPORT_CONFLICT` / `ARTIFACT_EXPORT_FAILED` | Destination conflict / local export unconfirmed. Keep the original receipt, resolve the output path and retry export without rebuilding. |
 | `RETIREMENT_UNCONFIRMED` | Work may be usable, but owned resource cleanup needs reconciliation. |
 
 The high-level SDK throws `BuildOperationError extends BuildError`, with typed `code` and `build` snapshot. `BuildPreparationError` carries ID and directory. Unknown transport failures become `REMOTE_UNAVAILABLE`; low-level existing functions retain some ordinary errors for compatibility. A task/output configuration preflight check cannot predict every Gradle-generated layout.
+
+`wait` and `export` have compact automation envelopes rather than the full build inspection: [result/exit-code contracts](automation.md#cli-and-ci-without-a-wrapper). `wait` returns known failures as domain results; `observe` retains the existing throwing contract. A valid artifact with unresolved cleanup remains a non-successful overall completion.
 
 ## Stale locks
 

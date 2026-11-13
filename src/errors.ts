@@ -11,6 +11,8 @@ export type BuildErrorCode =
 	| "REMOTE_UNAVAILABLE"
 	| "BUILD_FAILED"
 	| "ARTIFACT_VERIFICATION_FAILED"
+	| "ARTIFACT_EXPORT_CONFLICT"
+	| "ARTIFACT_EXPORT_FAILED"
 	| "RETIREMENT_UNCONFIRMED";
 export class BuildError extends Error {
 	readonly code: BuildErrorCode;

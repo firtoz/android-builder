@@ -40,6 +40,8 @@ for (const path of [
 	"dist/index.d.ts",
 	"dist/builder.d.ts",
 	"dist/diagnostics.d.ts",
+	"dist/results.d.ts",
+	"dist/artifacts.d.ts",
 	"dist/cli.js",
 	"dist/providers/boat.js",
 	"host/host.py",
@@ -49,6 +51,8 @@ for (const path of [
 	"docs/ci.md",
 	"docs/install.md",
 	"docs/sdk.md",
+	"docs/expo.md",
+	"docs/automation.md",
 	"maintainer/README.md",
 	"LICENSE",
 ])
@@ -123,7 +127,7 @@ await writeFile(
 	`import {createBuilder,defineProjectConfig,BuildOperationError,type BuildHandle,type BuildProvider} from '@firtoz/android-builder';
 const config=defineProjectConfig({project:{kind:'gradle'},admissionAllowanceUsd:0.2});
 const builder=createBuilder();
-async function use(build:BuildHandle){try{await build.start({admitUsd:0.2});await build.observe({signal:new AbortController().signal});return build.artifact()}catch(e){if(e instanceof BuildOperationError)console.log(e.code,e.build.cleanup);throw e}}
+async function use(build:BuildHandle){try{await build.start({admitUsd:0.2,waitForCompletion:false});await builder.list({limit:20});const result=await build.wait({signal:new AbortController().signal});if(result.outcome==='succeeded'){const hash:string=result.artifact.sha256;const seconds:number|undefined=result.timings[0]?.seconds;void hash;void seconds;}const artifact=await build.exportArtifact('/approved/build.apk');const bytes:number=artifact.bytes;void bytes;return build.artifact()}catch(e){if(e instanceof BuildOperationError)console.log(e.code,e.build.cleanup);throw e}}
 void config; void builder; void use; const provider:BuildProvider={id:'fixture',open:async()=>{throw Error('not allocated')}};void provider;
 `,
 );

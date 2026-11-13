@@ -66,6 +66,7 @@ async function observeBuild(
 		log?: (bytes: Uint8Array) => void;
 		signal?: AbortSignal;
 		progress?: (journal: BuildJournal) => void;
+		untilLaunched?: boolean;
 	} = {},
 ) {
 	if (options.signal?.aborted)
@@ -113,6 +114,11 @@ async function observeBuild(
 			`Android build failed. Original logs and receipt retained at ${directory}.`,
 		);
 	}
+	if (options.untilLaunched && journal.state === "launching")
+		throw new BuildError(
+			"LAUNCH_UNCERTAIN",
+			"Launch acknowledgement remains uncertain; observe this same receipt, never replay launch",
+		);
 	if (journal.expiresAt && now() >= journal.expiresAt - 30_000)
 		throw new BuildError(
 			"OBSERVATION_TIMEOUT",
@@ -207,6 +213,8 @@ async function observeBuild(
 		journal.state = "running";
 		await saveJournal(directory, journal);
 	}
+	// Remote work is already detached by host.py. No local background worker is spawned.
+	if (options.untilLaunched) return;
 	const startObservationDeadline = now() + 30_000;
 	const log = await open(join(directory, "build.log"), "a+", 0o600);
 	try {
@@ -385,6 +393,8 @@ export interface RunOptions {
 	progress?: (journal: BuildJournal) => void;
 	/** Observe/retrieve/finish cleanup only; never allocate or launch. */
 	observeOnly?: boolean;
+	/** Return after an acknowledged launch; observation/retrieval require a later call. */
+	untilLaunched?: boolean;
 }
 /** Resume the durable identity in directory; uncertain launches are observed, never replayed. */
 export async function runBuild(

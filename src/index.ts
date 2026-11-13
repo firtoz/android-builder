@@ -1,3 +1,4 @@
+export type { VerifiedArtifact } from "./artifacts.js";
 export {
 	type BuildHandle,
 	type BuildInspection,
@@ -6,6 +7,7 @@ export {
 	type BuildProvider,
 	createBuilder,
 	type ObserveOptions,
+	type StartOptions,
 } from "./builder.js";
 export {
 	type BuildConfig,
@@ -23,5 +25,11 @@ export {
 } from "./diagnostics.js";
 export { BuildError, type BuildErrorCode } from "./errors.js";
 export { readJournal, withBuildLock } from "./files.js";
+export {
+	type BuildHistory,
+	type BuildListItem,
+	listBuilds,
+} from "./history.js";
 export { type PrepareOptions, prepareBuild, sourceAllowed } from "./prepare.js";
+export type { BuildCompletion, BuildIssue } from "./results.js";
 export { installBuild, signBuild } from "./sign.js";
