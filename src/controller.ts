@@ -10,6 +10,7 @@ import {
 	sha256,
 	spendingLimit,
 } from "./contracts.js";
+import { BuildError } from "./errors.js";
 import {
 	atomicJson,
 	readJournal,
@@ -29,8 +30,9 @@ export async function verifyInputs(directory: string, journal: BuildJournal) {
 	for (const input of journal.inputs) {
 		const bytes = await readFile(join(directory, input.name));
 		if (bytes.length !== input.bytes || sha256(bytes) !== input.sha256)
-			throw Error(
-				`Frozen input changed: ${input.name}. Prepare a new build ID.`,
+			throw new BuildError(
+				"INVALID_INPUT",
+				`Frozen input changed: ${input.name}. Preserve this receipt; restore exact original inputs to reconcile, or explicitly retire its owned host. Do not create another identity to recover uncertainty.`,
 			);
 	}
 }
@@ -48,7 +50,8 @@ async function retireOwnedBuild(
 	} catch {
 		journal.cleanupError = true;
 		await saveJournal(directory, journal);
-		throw Error(
+		throw new BuildError(
+			"RETIREMENT_UNCONFIRMED",
 			`Owned build host retirement is unconfirmed. Preserve build ${journal.id}; retry its retire command. Provider lease remains bounded.`,
 		);
 	}
@@ -62,45 +65,57 @@ async function observeBuild(
 		wait?: () => Promise<void>;
 		log?: (bytes: Uint8Array) => void;
 		signal?: AbortSignal;
+		progress?: (journal: BuildJournal) => void;
 	} = {},
 ) {
+	if (options.signal?.aborted)
+		throw new BuildError(
+			"OBSERVATION_STOPPED",
+			"Observation stopped; preserve this receipt, remote work may continue",
+		);
+	options.progress?.(structuredClone(journal));
 	const now = options.now ?? Date.now;
 	const wait =
 		options.wait ??
 		(() => new Promise<void>((r) => setTimeout(r, ANDROID_BUILD.pollMs)));
 	await verifyInputs(directory, journal);
 	const root = remoteRoot(journal.id);
-	if (journal.retired) {
-		if (
-			journal.artifactVerified &&
-			sha256(await readFile(join(directory, "artifact.apk"))) ===
-				journal.outcome?.artifact?.sha256
-		)
-			return;
-		throw Error(
-			"This build host was retired without a verified local artifact. Do not replay its command; prepare a new ID if a new build is wanted.",
+	if (journal.retired && journal.state === "failed")
+		throw new BuildError(
+			"BUILD_FAILED",
+			`Android build failed. Original logs and receipt retained at ${directory}.`,
 		);
-	}
 	if (journal.artifactVerified && journal.outcome?.artifact) {
-		const bytes = await readFile(join(directory, "artifact.apk"));
+		const bytes = await readFile(join(directory, "artifact.apk")).catch(
+			() => undefined,
+		);
 		if (
+			!bytes ||
 			bytes.length !== journal.outcome.artifact.bytes ||
 			sha256(bytes) !== journal.outcome.artifact.sha256
 		)
-			throw Error(
-				"Verified artifact changed; retain the source and do not rerun work",
+			throw new BuildError(
+				"ARTIFACT_VERIFICATION_FAILED",
+				"Verified artifact changed or is missing; retain the receipt and do not rerun work",
 			);
 		await retireOwnedBuild(directory, journal, transport);
 		return;
 	}
+	if (journal.retired)
+		throw new BuildError(
+			"INVALID_STATE",
+			"This build host was retired without a verified local artifact. Do not replay its command; prepare a new ID only if a deliberately new build is wanted.",
+		);
 	if (journal.state === "failed" && journal.outcome) {
 		await retireOwnedBuild(directory, journal, transport);
-		throw Error(
+		throw new BuildError(
+			"BUILD_FAILED",
 			`Android build failed. Original logs and receipt retained at ${directory}.`,
 		);
 	}
 	if (journal.expiresAt && now() >= journal.expiresAt - 30_000)
-		throw Error(
+		throw new BuildError(
+			"OBSERVATION_TIMEOUT",
 			"Build lease is ending or expired; reconcile or retire the same operation without reallocating",
 		);
 	if (journal.state === "prepared" || journal.state === "allocating") {
@@ -108,11 +123,24 @@ async function observeBuild(
 		journal.state = "allocating";
 		await saveJournal(directory, journal);
 		// Jetski persists the same provider idempotency key/body before sending.
-		journal.hostId = await transport.allocate({
-			owner: journal.owner,
-			operationId: journal.id,
-			expiresAt: journal.expiresAt,
-		});
+		if (options.signal?.aborted)
+			throw new BuildError(
+				"OBSERVATION_STOPPED",
+				"Observation stopped; preserve this receipt, remote work may continue",
+			);
+		try {
+			journal.hostId = await transport.allocate({
+				owner: journal.owner,
+				operationId: journal.id,
+				expiresAt: journal.expiresAt,
+			});
+		} catch (cause) {
+			throw new BuildError(
+				"ALLOCATION_UNCERTAIN",
+				"Allocation unconfirmed; reconcile the same operation with start, never create a replacement identity",
+				{ cause },
+			);
+		}
 		journal.state = "allocated";
 		await saveJournal(directory, journal);
 	}
@@ -157,12 +185,25 @@ async function observeBuild(
 		await saveJournal(directory, journal);
 	}
 	if (journal.state === "uploaded") {
+		if (options.signal?.aborted)
+			throw new BuildError(
+				"OBSERVATION_STOPPED",
+				"Observation stopped; preserve this receipt, remote work may continue",
+			);
 		journal.state = "launching";
 		await saveJournal(directory, journal);
-		await transport.command(
-			host,
-			`env -i HOME="$HOME" PATH=/usr/bin:/bin python3 ${quote(`${root}/host.py`)} launch`,
-		);
+		try {
+			await transport.command(
+				host,
+				`env -i HOME="$HOME" PATH=/usr/bin:/bin python3 ${quote(`${root}/host.py`)} launch`,
+			);
+		} catch (cause) {
+			throw new BuildError(
+				"LAUNCH_UNCERTAIN",
+				`Launch acknowledgement lost; observe the same build; never replay. ${cause instanceof Error ? cause.message : ""}`,
+				{ cause },
+			);
+		}
 		journal.state = "running";
 		await saveJournal(directory, journal);
 	}
@@ -170,9 +211,14 @@ async function observeBuild(
 	const log = await open(join(directory, "build.log"), "a+", 0o600);
 	try {
 		for (;;) {
-			options.signal?.throwIfAborted();
+			if (options.signal?.aborted)
+				throw new BuildError(
+					"OBSERVATION_STOPPED",
+					"Observation stopped; preserve this receipt, remote work may continue",
+				);
 			if (now() >= journal.expiresAt - 30_000)
-				throw Error(
+				throw new BuildError(
+					"OBSERVATION_TIMEOUT",
 					`Build lease is ending. Preserve ${journal.id}; do not start another command automatically.`,
 				);
 			const reply = observation.parse(
@@ -207,6 +253,7 @@ async function observeBuild(
 			}
 			journal.logCursor = reply.cursor;
 			if (reply.status) journal.outcome = reply.status;
+			options.progress?.(structuredClone(journal));
 			await saveJournal(directory, journal);
 			if (
 				reply.status &&
@@ -218,11 +265,13 @@ async function observeBuild(
 				break;
 			}
 			if (!reply.status && reply.claimed && now() >= startObservationDeadline)
-				throw Error(
+				throw new BuildError(
+					"LAUNCH_UNCERTAIN",
 					`Build ${journal.id} has an uncertain launch claim. Observe status; never replay the launch.`,
 				);
 			if (!reply.status && !reply.claimed && now() >= startObservationDeadline)
-				throw Error(
+				throw new BuildError(
+					"LAUNCH_UNCERTAIN",
 					`Launch ${journal.id} was not acknowledged. Reconcile or retire; never replay it.`,
 				);
 			await wait();
@@ -233,19 +282,31 @@ async function observeBuild(
 	if (journal.state === "complete") {
 		const artifact = journal.outcome?.artifact;
 		if (!artifact)
-			throw Error(
+			throw new BuildError(
+				"ARTIFACT_VERIFICATION_FAILED",
 				"Successful build omitted its artifact; retain host for investigation.",
 			);
-		await transport.download(
-			host,
-			`${root}/artifact.apk`,
-			artifact.bytes,
-			join(directory, "artifact.apk"),
-			artifact.sha256,
-		);
+		try {
+			await transport.download(
+				host,
+				`${root}/artifact.apk`,
+				artifact.bytes,
+				join(directory, "artifact.apk"),
+				artifact.sha256,
+			);
+		} catch (cause) {
+			throw new BuildError(
+				"ARTIFACT_VERIFICATION_FAILED",
+				"Artifact transfer was not verified; retain host and observe the same build",
+				{ cause },
+			);
+		}
 		const bytes = await readFile(join(directory, "artifact.apk"));
 		if (bytes.length !== artifact.bytes || sha256(bytes) !== artifact.sha256)
-			throw Error("Artifact transfer verification failed; retain host.");
+			throw new BuildError(
+				"ARTIFACT_VERIFICATION_FAILED",
+				"Artifact transfer verification failed; retain host.",
+			);
 		journal.artifactVerified = true;
 		await saveJournal(directory, journal);
 	}
@@ -257,10 +318,14 @@ async function observeBuild(
 		outcome: journal.outcome,
 		artifactVerified: journal.artifactVerified,
 		reservedUsd: journal.config.reservationUsd,
+		admissionAllowanceUsd: journal.config.reservationUsd,
+		allowanceMeaning:
+			"Operator-supplied per-build admission allowance, not pricing, an account cap or a final invoice",
 	});
 	await retireOwnedBuild(directory, journal, transport);
 	if (journal.state !== "complete")
-		throw Error(
+		throw new BuildError(
+			"BUILD_FAILED",
 			`Android build failed. Original logs and receipt retained at ${directory}.`,
 		);
 }
@@ -317,6 +382,9 @@ export interface RunOptions {
 	wait?: () => Promise<void>;
 	log?: (bytes: Uint8Array) => void;
 	signal?: AbortSignal;
+	progress?: (journal: BuildJournal) => void;
+	/** Observe/retrieve/finish cleanup only; never allocate or launch. */
+	observeOnly?: boolean;
 }
 /** Resume the durable identity in directory; uncertain launches are observed, never replayed. */
 export async function runBuild(
@@ -327,7 +395,33 @@ export async function runBuild(
 	return withBuildLock(directory, async () => {
 		const journal = await readJournal(directory);
 		spendingLimit(options.maxUsd, journal.config.reservationUsd);
-		await observeBuild(directory, journal, transport, options);
+		if (
+			options.observeOnly &&
+			["prepared", "allocating", "allocated", "uploaded"].includes(
+				journal.state,
+			)
+		)
+			throw new BuildError(
+				"INVALID_STATE",
+				"Build needs explicit start/admission to continue before launch; use start with the same receipt",
+			);
+		if (!options.observeOnly && !journal.admission) {
+			journal.admission = {
+				allowanceUsd: journal.config.reservationUsd,
+				operatorLimitUsd: options.maxUsd,
+				admittedAt: Date.now(),
+			};
+			await saveJournal(directory, journal);
+		}
+		try {
+			await observeBuild(directory, journal, transport, options);
+		} catch (error) {
+			if (error instanceof BuildError && error.code === "REMOTE_GONE") {
+				journal.hostAbsent = true;
+				await saveJournal(directory, journal);
+			}
+			throw error;
+		}
 		return readJournal(directory);
 	});
 }
@@ -338,7 +432,8 @@ export async function retireBuild(
 	return withBuildLock(directory, async () => {
 		const journal = await readJournal(directory);
 		if (journal.state === "allocating" && !journal.hostId)
-			throw Error(
+			throw new BuildError(
+				"ALLOCATION_UNCERTAIN",
 				"Allocation uncertain; reconcile the same operation before retirement",
 			);
 		await retireOwnedBuild(directory, journal, transport);

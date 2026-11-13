@@ -1,16 +1,50 @@
-# Expo hello
+# Build an Expo debug APK
 
-A minimal Expo application; prebuild creates its Android project. No account identifiers, Firebase or model services are required. The standalone example has passed a real hosted Android build; see the repository qualification notes.
+This is a minimal Expo app. Prebuild generates its Android project; the result is a debug APK for the usual Metro/development workflow, not a self-contained production JS bundle or a qualified development-client build.
 
-1. Copy this whole folder into a new Git repository and commit its source. Use Node24.22.1+.
-2. Install the local packed Android Builder tarball with `npm install --save-dev /path/to/package.tgz` (after publication, `npm install --save-dev @firtoz/android-builder`). Commit the updated manifest and lockfile.
-3. Supply an existing accepted Android SDK licenses directory; no terms are accepted automatically.
-4. Run:
+## Set up an isolated app
+
+Use Linux and Node 24.22.1+. First [pack the candidate](../../docs/install.md#pack-this-checkout); the published `0.1.0` does not provide this example's API.
+
+Copy this entire folder into a new directory **outside the Android Builder checkout**, then enter it:
 
 ```sh
-npx android-builder prepare --config android-builder.config.ts --licenses /path/to/sdk/licenses --directory ./build-receipt
-# Review the frozen source-manifest.json. Supply BOAT_API_KEY privately on the controller.
-npx android-builder run --directory ./build-receipt --max-usd 0.20
+cp -R /absolute/path/to/android-builder/examples/expo ./expo-hello
+cd expo-hello
+printf 'node_modules/\nbuild-receipt/\n' > .gitignore
 ```
 
-The application ID, source profile, artifact and operator reservation are explicit in `android-builder.config.ts`. $0.20 is an example per-build reservation, not a provider quote or aggregate budget. Increase it if your selected host/fees require more. Reconnect with the same receipt directory after a disconnect. Signing and device installation remain separate explicit steps.
+[Install the tarball in this app](../../docs/install.md#install-in-an-app). That installation resolves the app dependencies and writes its lockfile. Commit the source, lockfile and public tarball:
+
+```sh
+git init
+git add .
+git add -f vendor/firtoz-android-builder-0.2.0-dev.0.tgz
+git commit -m "Add Expo Android example"
+```
+
+## Prepare without renting a VM
+
+Supply a directory of SDK license hashes you have [already accepted](../../docs/configuration.md#sdk-licenses). No local Android toolchain is needed.
+
+```sh
+npx android-builder prepare --config android-builder.config.ts \
+  --licenses /private/accepted-sdk-licenses --directory ./build-receipt
+npx android-builder inspect --directory ./build-receipt
+```
+
+Review the report and resolved plan. Root `package.json#packageManager` supplies npm, `app.json` supplies the expected application ID, and the debug APK path is derived. NDK/CMake remain explicit because generated native requirements cannot be safely inferred from app.json. Keep this source free of an `android/` tree; an existing native project uses the Gradle profile instead.
+
+## Start and retrieve
+
+Provide `BOAT_API_KEY` privately to the controller, then explicitly admit the build:
+
+```sh
+npx android-builder start --directory ./build-receipt --admit-usd 0.20
+```
+
+A successful build saves the verified `build-receipt/artifact.apk` and retires its owned VM. `$0.20` is an example operator allowance for this build, not a quote, account cap or invoice guarantee; review the selected machine and full lease first.
+
+After an interrupted observation, run `observe --directory ./build-receipt`. If interrupted before launch, explicitly `start` the same receipt. Keep the receipt private and durable; never create another ID to resolve uncertainty. [Recovery](../../docs/operations.md) · [Optional signing/install](../../docs/signing.md).
+
+The current example has offline package/type/preparation checks. Earlier live builds concern `0.1.0`, not this candidate. [Verification status](../../docs/qualification.md).

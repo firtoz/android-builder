@@ -7,3 +7,5 @@ Use released Jetski. Provider credentials stay on the controller; signing is sep
 No paid hosts, public repository creation or npm publication without user authorization. Existing experiment allowances do not transfer to this project. Do not modify client repositories during extraction.
 
 Run `npm run check` and inspect the packed artifact. Local simulated-host tests are not live provider or real Android compilation qualification. Keep those evidence boundaries explicit.
+
+Keep the README focused on developer value and a working first trial. Put current task guides in docs/ and examples beside their source. Curate useful implementation rationale and qualification evidence in maintainer/; remove completed plans, raw prompts and incremental work logs instead of treating them as user documentation.

@@ -61,7 +61,9 @@ if v['project']['kind']=='expo':
  stage('prebuild',[str(exe),'prebuild','--platform','android','--no-install'],project)
  project=project/'android'
 os.environ['GRADLE_OPTS']='-Dorg.gradle.jvmargs="-Xmx'+str(v['gradle']['heapMb'])+'m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8" -Dorg.gradle.daemon=false'
-stage('gradle',['./gradlew',*v['gradle']['tasks'],*v['gradle']['arguments']],project)
+args=['./gradlew',*v['gradle']['tasks'],*v['gradle']['arguments']]
+if v.get('abis'):args.append('-PreactNativeArchitectures='+','.join(v['abis']))
+stage('gradle',args,project)
 artifact=(src/v['artifact']).resolve()
 if not artifact.is_relative_to(src.resolve()) or not artifact.is_file() or artifact.is_symlink():raise ValueError('Artifact escapes source or is missing')
 if artifact.stat().st_size<=0 or artifact.stat().st_size>1024*1024*1024:raise ValueError('Artifact size out of bounds')

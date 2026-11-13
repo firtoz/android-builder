@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { type BuildJournal, buildJournal } from "./contracts.js";
+import { BuildError } from "./errors.js";
 export const exec = promisify(execFile);
 export async function atomicJson(path: string, value: unknown) {
 	const temporary = `${path}.next`;
@@ -34,14 +36,19 @@ export async function withBuildLock<T>(
 ): Promise<T> {
 	const lock = join(directory, "controller.lock");
 	await mkdir(lock, { mode: 0o700 }).catch(() => {
-		throw Error(
+		throw new BuildError(
+			"LOCKED",
 			"Build is locked. Inspect its controller before removing a stale lock; never run duplicate controllers.",
 		);
 	});
 	try {
 		await writeFile(
 			join(lock, "owner.json"),
-			JSON.stringify({ pid: process.pid, startedAt: Date.now() }),
+			JSON.stringify({
+				pid: process.pid,
+				host: hostname(),
+				startedAt: Date.now(),
+			}),
 			{ mode: 0o600, flag: "wx" },
 		);
 		return await operation();

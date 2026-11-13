@@ -7,6 +7,7 @@ import {
 import { SqliteState } from "@firtoz/jetski/state/sqlite";
 import type { BuilderTransport } from "../contracts.js";
 import { downloadVerified } from "../controller.js";
+import { BuildError } from "../errors.js";
 
 /** Dedicated full build VMs; this never claims a Podman/gVisor workload is ready. */
 export function boatTransport(
@@ -41,7 +42,8 @@ export function boatTransport(
 						{ timeoutMs: 15_000 },
 					);
 					if (r.status === 404)
-						throw Error(
+						throw new BuildError(
+							"REMOTE_GONE",
 							"Owned build host disappeared; do not allocate a replacement automatically",
 						);
 					const value = r.value.sandbox;
@@ -67,6 +69,11 @@ export function boatTransport(
 					undefined,
 					{ timeoutMs: 30_000, maxBytes: 512 * 1024 },
 				);
+				if (r.status === 404)
+					throw new BuildError(
+						"REMOTE_GONE",
+						"Owned build host is absent; remote artifact may be unrecoverable. Preserve its receipt",
+					);
 				if (
 					r.status !== 200 ||
 					r.value.exitCode !== 0 ||
@@ -86,6 +93,25 @@ export function boatTransport(
 					expectedHash,
 				),
 			retire: (host, operationId) => provider.retire(host, operationId),
+		},
+	};
+}
+
+/** Convenience factory; credentials are read only when an operation opens it. */
+export function boatProvider(
+	options: { machine?: BoatMachineType; token?: () => string | undefined } = {},
+): import("../builder.js").BuildProvider {
+	const machine = options.machine ?? "large";
+	return {
+		id: `boat:${machine}`,
+		async open(directory) {
+			const token = options.token ? options.token() : process.env.BOAT_API_KEY;
+			if (!token)
+				throw new BuildError(
+					"INVALID_INPUT",
+					"Supply controller-only BOAT_API_KEY",
+				);
+			return boatTransport(directory, token, { machine });
 		},
 	};
 }

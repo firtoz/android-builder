@@ -1,9 +1,7 @@
-import { defineBuildConfig } from "@firtoz/android-builder";
-export default defineBuildConfig({
+import { defineProjectConfig } from "@firtoz/android-builder";
+export default defineProjectConfig({
 	project: { kind: "expo" },
-	packageManager: { kind: "npm", version: "11.10.1" },
+	// Generated native tool requirements cannot be read from app.json.
 	toolchain: { ndk: "27.1.12297006", cmake: "3.22.1" },
-	artifact: "android/app/build/outputs/apk/debug/app-debug.apk",
-	applicationId: "org.example.builderhello",
-	reservationUsd: 0.2,
+	admissionAllowanceUsd: 0.2,
 });

@@ -1,7 +1,5 @@
-import { defineBuildConfig } from "@firtoz/android-builder";
-export default defineBuildConfig({
+import { defineProjectConfig } from "@firtoz/android-builder";
+export default defineProjectConfig({
 	project: { kind: "gradle" },
-	artifact: "app/build/outputs/apk/debug/app-debug.apk",
-	applicationId: "org.example.hello",
-	reservationUsd: 0.2,
+	admissionAllowanceUsd: 0.2,
 });

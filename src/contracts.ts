@@ -124,6 +124,12 @@ export const buildConfig = z
 			)
 			.max(16)
 			.default([]),
+		source: z
+			.strictObject({
+				extraFiles: z.array(relativePath).max(128).default([]),
+				requiredFiles: z.array(relativePath).max(128).default([]),
+			})
+			.default({ extraFiles: [], requiredFiles: [] }),
 		lifetimeSeconds: z.number().int().min(300).max(3600).default(3600),
 		executionSeconds: z.number().int().min(30).max(3300).default(3000),
 		reservationUsd: z.number().positive().max(100),
@@ -206,6 +212,14 @@ export const buildJournal = z.strictObject({
 	outcome: remoteStatus.optional(),
 	artifactVerified: z.boolean().default(false),
 	retired: z.boolean().default(false),
+	hostAbsent: z.boolean().default(false),
+	admission: z
+		.object({
+			allowanceUsd: z.number().positive(),
+			operatorLimitUsd: z.number().positive(),
+			admittedAt: z.number().int(),
+		})
+		.optional(),
 	cleanupError: z.boolean().default(false),
 });
 export type BuildJournal = z.infer<typeof buildJournal>;

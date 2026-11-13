@@ -1,5 +1,13 @@
 {
 	"name": "android-builder-gradle-example",
 	"version": "1.0.0",
-	"private": true
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json"
+	},
+	"devDependencies": {
+		"@types/node": "26.6.3",
+		"typescript": "6.0.3"
+	}
 }

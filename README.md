@@ -1,69 +1,68 @@
 # Android Builder
 
-Recoverable Android APK builds on disposable Linux compute. Use the same typed configuration from your laptop or CI; keep provider credentials on the controller and sign artifacts separately.
+Build Android debug APKs on disposable Linux VMs without installing an Android toolchain on your laptop. Prepare and review the source first, explicitly authorize a build, and reconnect to retrieve the verified APK if your terminal or CI job is interrupted.
 
-The standalone Expo and native Gradle examples have each compiled on fresh Boat Large hosts, with hash-verified APK downloads and confirmed host retirement. [Measured results and limits](docs/qualification.md). Core recovery tests use simulated hosts and the real one-shot launcher; consumer integrations and broader release profiles remain separate qualification.
+Use it for native Gradle apps or Expo prebuild when you want remote compute while keeping provider credentials off build machines and signing keys separate. The same CLI and TypeScript SDK work locally and in CI. Receipts preserve the build identity, logs and recovery state; uncertain launches are never repeated automatically.
 
-## Use it
+**Version:** this checkout documents the unpublished `0.2.0-dev.0` candidate. The npm release `0.1.0` uses a different workflow. Follow the checkout trial below or [upgrade an existing integration](docs/migration.md).
 
-Use Node 24.22.1 or newer on Linux. Your source must be in Git, and you must supply SDK license hashes you have already accepted. Nothing accepts SDK terms automatically. The initial host bootstrap expects an x86-64 Debian/Ubuntu machine with passwordless `sudo` and outbound HTTPS; Boat Large is the initial adapter configuration.
+## Give it a try
 
-Install with `npm install --save-dev @firtoz/android-builder`. For development before a release reaches the registry, run `npm run build && npm pack` in this checkout and install the local tarball.
+You need Linux, Node **24.22.1+**, Git and tar. From this checkout, inspect the CLI without cloud credentials or spending:
+
+```sh
+npm ci --ignore-scripts
+npm run build
+node dist/cli.js --help
+```
+
+Then follow one complete example:
+
+- [Native Gradle app](examples/gradle/README.md): a small Java app with no JavaScript runtime.
+- [Expo app](examples/expo/README.md): generate the Android project and build a debug APK for the normal Metro/development workflow.
+
+Both guides start with an isolated app repository and the [candidate installation instructions](docs/install.md). Preparation needs a directory of SDK license hashes you have **already accepted**, but no local Android SDK, Java, Gradle, NDK or CMake. [How to supply accepted licenses](docs/configuration.md#sdk-licenses).
+
+## From source to APK
+
+Once installed in your app, use a minimal native configuration:
 
 ```ts
-// android-builder.config.ts
-import { defineBuildConfig } from '@firtoz/android-builder';
-
-export default defineBuildConfig({
-  project: { kind: 'expo', directory: '.' },
-  packageManager: { kind: 'npm', version: '11.10.1' },
-  toolchain: { ndk: '27.1.12297006', cmake: '3.22.1' },
-  artifact: 'android/app/build/outputs/apk/debug/app-debug.apk',
-  applicationId: 'org.example.hello',
-  reservationUsd: 0.20,
+import { defineProjectConfig } from '@firtoz/android-builder';
+export default defineProjectConfig({
+  project: { kind: 'gradle' },
+  admissionAllowanceUsd: 0.20,
 });
 ```
 
 ```sh
-npx android-builder prepare --config ./android-builder.config.ts \
-  --licenses "$ANDROID_HOME/licenses" --directory ./build-receipt
-# Review build-receipt/source-manifest.json and its frozen inputs first.
-# BOAT_API_KEY comes from your controller/CI secret store, not the source archive.
-npx android-builder run --directory ./build-receipt --max-usd 0.20
+npx android-builder prepare --config android-builder.config.ts \
+  --licenses /private/accepted-sdk-licenses --directory ./build-receipt
+npx android-builder inspect --directory ./build-receipt
+# Review the frozen inputs and resolved settings before starting.
+# Supply BOAT_API_KEY privately to the controller for the next command.
+npx android-builder start --directory ./build-receipt --admit-usd 0.20
 ```
 
-Preparation reads safe Git-tracked working-tree bytes, including tracked local edits. Untracked files are omitted; add intended source files to Git first. It excludes hidden paths, dependency/output directories and common credential files. This filtering is not a secret scanner: review the frozen manifest. Explicit public inputs can supply optional files such as Firebase client configuration; signing keys and service-account keys are never build inputs.
+A successful start retrieves `build-receipt/artifact.apk`, verifies its exact length and SHA-256, and retires the owned VM. The host also checks the APK signature, expected application ID and any requested ABI set.
 
-A successful run downloads `artifact.apk`, verifies its length and SHA-256, persists its receipt and retires the owned host. A disconnect retains the same directory and identity: run the same command again to observe existing work. Never prepare a new identity merely because a response was lost. `status` is local; `retire` explicitly releases only that build's owned machine. Process RAM, shared caches and warm pools are outside this version.
+`0.20` is an example **operator-supplied per-build admission allowance**, not a provider quote, account-wide cap or invoice guarantee. The default machine is Boat Large with a one-hour lease; cold setup, execution and transfer all consume that lease. [Configuration and lease planning](docs/configuration.md#resolved-values).
 
-The reservation is an operator-supplied conservative per-build allowance, **not a provider price estimate, account-level cap or invoice**. It must cover the chosen host's full lease, possible start fees and transfers. The default lease is one hour; observation stops before its expiry. A failed or uncertain transfer retains the source until explicit retirement or provider expiry. Keep the receipt directory private and on durable controller storage; losing it can make work unobservable even though the bounded lease still expires.
+After interruption, keep the same receipt and run `observe --directory ./build-receipt`. Ctrl-C stops observation; remote compilation may continue. If work had not reached launch, explicitly `start` the same receipt again. A verified artifact and unconfirmed retirement can coexist. Never delete receipts or choose a new ID to recover uncertainty. [Recovery and cleanup](docs/operations.md).
 
-## Embedded API
+## Use it in your project
 
-```ts
-import { prepareBuild, runBuild } from '@firtoz/android-builder';
-import { boatTransport } from '@firtoz/android-builder/providers/boat';
-import config from './android-builder.config.ts';
+| Your next task | Guide |
+| --- | --- |
+| Choose inputs, toolchain, tasks or ABIs | [Configuration](docs/configuration.md) |
+| Build from a monorepo | [Monorepo recipe](docs/monorepo.md) |
+| Build in a trusted CI job | [CI recipe](docs/ci.md) |
+| Integrate with a TypeScript tool | [SDK](docs/sdk.md) |
+| Change the machine or provider adapter | [Providers](docs/providers.md) |
+| Sign an APK or install on an existing device | [Signing and install](docs/signing.md) |
 
-const directory = './build-receipt';
-await prepareBuild({ root: '.', directory, config, licensesDirectory: '/path/to/sdk/licenses' });
-const host = boatTransport(directory, process.env.BOAT_API_KEY!);
-try {
-  const result = await runBuild(directory, host.transport, { maxUsd: 0.20 });
-  console.log(result.artifactVerified);
-} finally {
-  host.close();
-}
-```
+Build only trusted source: dedicated build VMs have network access and sudo, not sandbox-runtime attestation. Preparation uses selected Git-tracked working-tree bytes, including edits; ordinary untracked/hidden inputs are omitted. Review the report—it is not a secret scanner or a complete dependency resolver. Keep receipts private and durable.
 
-`BuilderTransport` is injectable. Adapters must persist allocation identities, enforce leases, verify ownership before retirement and bound transfers. The root SDK does not import the Boat/SQLite adapter. These are dedicated trusted-source build machines, not untrusted multi-tenant execution sandboxes.
+The current scope is debug APKs. Production releases, AAB/store distribution, device launch and alternative providers are not qualified. The candidate has offline checks; earlier live Android builds apply to `0.1.0`. [Support and verification status](docs/qualification.md).
 
-## Examples and operations
-
-- [Expo application](examples/expo/README.md)
-- [Native Java/Gradle application](examples/gradle/README.md)
-- [Lifecycle, recovery and CI](docs/operations.md)
-- [Separate signing](docs/signing.md)
-- [Measured qualification and limitations](docs/qualification.md)
-
-Run `npm install` and `npm run check` to develop this package. No cloud account or Android SDK is needed for its offline tests. MIT licensed.
+MIT licensed. To work on Android Builder itself, start in [maintainer/](maintainer/README.md); package users can skip it.
