@@ -64,6 +64,6 @@ try {
 - [Native Java/Gradle application](examples/gradle/README.md)
 - [Lifecycle, recovery and CI](docs/operations.md)
 - [Separate signing](docs/signing.md)
-- [Qualification and remaining work](docs/goals/standalone-builder.md)
+- [Measured qualification and limitations](docs/qualification.md)
 
 Run `npm install` and `npm run check` to develop this package. No cloud account or Android SDK is needed for its offline tests. MIT licensed.
